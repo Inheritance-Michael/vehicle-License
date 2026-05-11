@@ -1,7 +1,9 @@
 'use strict';
-const readline = require('readline');
-const PizZip = require('pizzip');
+const readline    = require('readline');
+const PizZip      = require('pizzip');
 const Docxtemplater = require('docxtemplater');
+const ImageModule = require('docxtemplater-image-module-free');
+const QRCode      = require('qrcode');
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
@@ -11,265 +13,329 @@ const DOCS_DIR    = path.join(__dirname, "DOC's");
 const TEMP_DIR    = path.join(__dirname, '.tmp_filled');
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 
-
-// ── Config (output path) ─────────────────────────────────────────────────────
-function loadConfig() {
-  try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch { return null; }
-}
-function saveConfig(cfg) {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
-}
-function defaultOutputBase() {
-  return path.join(os.homedir(), 'Desktop');
-}
-function getJobFolder(outputBase, safePlate) {
-  const now = new Date();
-  const p2  = n => String(n).padStart(2,'0');
-  const stamp = `${now.getFullYear()}-${p2(now.getMonth()+1)}-${p2(now.getDate())}_${p2(now.getHours())}-${p2(now.getMinutes())}`;
-  const folder = path.join(outputBase, 'VehicleOutput', `${stamp}_${safePlate}`);
-  fs.mkdirSync(folder, { recursive: true });
-  return folder;
+// ── Config ────────────────────────────────────────────────────────────────────
+function loadConfig()      { try { return JSON.parse(fs.readFileSync(CONFIG_PATH,'utf8')); } catch { return null; } }
+function saveConfig(c)     { fs.writeFileSync(CONFIG_PATH, JSON.stringify(c,null,2)); }
+function defaultBase()     { return path.join(os.homedir(),'Desktop'); }
+function getJobFolder(base, plate) {
+  const n=new Date(), p2=n=>String(n).padStart(2,'0');
+  const s=`${n.getFullYear()}-${p2(n.getMonth()+1)}-${p2(n.getDate())}_${p2(n.getHours())}-${p2(n.getMinutes())}`;
+  const f=path.join(base,'VehicleOutput',`${s}_${plate}`);
+  fs.mkdirSync(f,{recursive:true}); return f;
 }
 async function handleSetPath() {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  console.log('\n  Enter a new output folder path.');
-  console.log(`  Press Enter to use Desktop (${defaultOutputBase()}):\n`);
-  const input = await new Promise(r => rl.question('  New path: ', a => r(a.trim())));
-  rl.close();
-  const chosen = input || defaultOutputBase();
-  saveConfig({ outputBase: chosen });
-  console.log(`\n  ✔  Output location updated to:\n     ${chosen}\n`);
+  const rl=readline.createInterface({input:process.stdin,output:process.stdout});
+  console.log(`\n  Press Enter to use Desktop (${defaultBase()}):\n`);
+  const v=await new Promise(r=>rl.question('  New path: ',a=>r(a.trim()))); rl.close();
+  const chosen=v||defaultBase(); saveConfig({outputBase:chosen});
+  console.log(`\n  ✔  Updated to: ${chosen}\n`);
 }
 
 // ── LibreOffice ───────────────────────────────────────────────────────────────
 function findLibreOffice() {
-  const candidates = [
+  for (const p of [
     'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
     'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe',
     'C:\\Program Files\\LibreOffice 7\\program\\soffice.exe',
-    'C:\\Program Files\\LibreOffice 6\\program\\soffice.exe',
-  ];
-  for (const p of candidates) if (fs.existsSync(p)) return p;
-  try {
-    const r = spawnSync('where', ['soffice'], { encoding: 'utf8' });
-    const line = (r.stdout || '').trim().split('\n')[0].trim();
-    if (line && fs.existsSync(line)) return line;
-  } catch {}
+  ]) if (fs.existsSync(p)) return p;
+  try { const r=spawnSync('where',['soffice'],{encoding:'utf8'}); const l=(r.stdout||'').trim().split('\n')[0].trim(); if(l&&fs.existsSync(l)) return l; } catch {}
   return null;
 }
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
-const MON_IDX   = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
-const MON_NAMES = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+const MON_IDX  ={JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
+const MON_NAME =['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
 function parseMonYear(s) {
-  const str = s.trim();
-  // Accept DD/MM/YYYY  e.g. 09/05/2026
-  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(str)) {
-    const [dd, mm, yyyy] = str.split('/');
-    return new Date(parseInt(yyyy), parseInt(mm) - 1, parseInt(dd));
-  }
-  // Accept MON YYYY  e.g. JUN 2026
-  const [mon, yr] = str.toUpperCase().split(/[\s\-]+/);
-  const m = MON_IDX[mon], y = parseInt(yr);
-  if (isNaN(m) || isNaN(y))
-    throw new Error(`Cannot parse "${s}". Use: JUN 2026  or  09/05/2026`);
-  return new Date(y, m, 1);
+  const str=s.trim();
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(str)) { const[dd,mm,yy]=str.split('/'); return new Date(+yy,+mm-1,+dd); }
+  const[mon,yr]=str.toUpperCase().split(/[\s\-]+/); const m=MON_IDX[mon],y=+yr;
+  if(isNaN(m)||isNaN(y)) throw new Error(`Cannot parse "${s}". Use: JUN 2026 or 09/05/2026`);
+  return new Date(y,m,1);
 }
-function fmtMonYear(d) { return `${MON_NAMES[d.getMonth()]} ${d.getFullYear()}`; }
-function calcExpiry(reg, cat) {
-  const d = parseMonYear(reg);
-  cat.toLowerCase() === 'commercial' ? d.setMonth(d.getMonth()+6) : d.setFullYear(d.getFullYear()+1);
-  return fmtMonYear(d);
+function fmtDD(d)  { const p=n=>String(n).padStart(2,'0'); return `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()}`; }
+function fmtMY(d)  { return `${MON_NAME[d.getMonth()]} ${d.getFullYear()}`; }
+function calcExpiry(reg,cat) {
+  const d=parseMonYear(reg);
+  cat.toLowerCase()==='commercial' ? d.setMonth(d.getMonth()+6) : d.setFullYear(d.getFullYear()+1);
+  return fmtDD(d);
 }
 
-// ── Prompt helper ─────────────────────────────────────────────────────────────
-const ask = (rl, q) => new Promise(r => rl.question(q, a => r(a.trim())));
+// ── Prompt helpers ────────────────────────────────────────────────────────────
+const ask = (rl,q) => new Promise(r=>rl.question(q,a=>r(a.trim())));
 
-// ── NEW PROOF F layout fix ────────────────────────────────────────────────────
-const isNewProofF = f => /new proof f/i.test(f);
+const FIELD_PROMPTS = {
+  OWNER_NAME:      "  Owner's Name                                : ",
+  PHONE_NUMBER:    "  Phone Number                                : ",
+  PLATE_NUMBER:    "  Number Plate                                : ",
+  PREVIOUS_NUMBER: "  Passengers Number  [Enter to skip]          : ",
+  VEHICLE_MAKE:    "  Vehicle Make  (e.g. Toyota)                 : ",
+  MODEL:           "  Model  (e.g. Camry)                         : ",
+  VEHICLE_TYPE:    "  Vehicle Type / Body Type  (e.g. Saloon)     : ",
+  COLOUR:          "  Colour                                      : ",
+  CHASSIS_NUMBER:  "  Chassis Number                              : ",
+  ENGINE_NUMBER:   "  Engine Number                               : ",
+  STATE:           "  State                                       : ",
+  ADDRESS:         "  Address                                     : ",
+  REG_DATE:        "  Registration Date  (DD/MM/YYYY)             : ",
+  isprice:         "  Insurance Price                             : ",
+  isData:          "  Insurance Top Data                          : ",
+  pfRegData:       "  Proof Reg Date  (DD/MM/YYYY or JUN 2026)    : ",
+  pfEXData:        "  Proof Expiry Date (DD/MM/YYYY or JUN 2027)  : ",
+  QR_CODE_1:       "  Proof Code URL        [Enter to skip]       : ",
+  QR_CODE_2:       "  GMR QR Code URL       [Enter to skip]       : ",
+};
+// Canonical display order
+const PROMPT_ORDER = ['OWNER_NAME','PHONE_NUMBER','PLATE_NUMBER','PREVIOUS_NUMBER',
+  'VEHICLE_MAKE','MODEL','VEHICLE_TYPE','COLOUR','CHASSIS_NUMBER','ENGINE_NUMBER',
+  'STATE','ADDRESS','REG_DATE','isprice','isData','pfRegData','pfEXData'];
 
-function applyNewProofFix(buffer, vehicleType, colour) {
-  if (!vehicleType || vehicleType.trim().length <= 29) return buffer;
-  const zip = new PizZip(buffer);
-  const xmlFile = zip.file('word/document.xml');
-  if (!xmlFile) return buffer;
-  const xmlEsc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const vtEsc = xmlEsc(vehicleType.trim());
-  const clEsc = xmlEsc(colour.trim());
-  let xml = xmlFile.asText();
-  xml = xml.replace(/(<w:p[ >][\s\S]*?<\/w:p>)/g, para => {
-    if (!para.includes(vtEsc) || !para.includes(clEsc)) return para;
-    const vtPos = para.indexOf(vtEsc);
-    const clPos = para.indexOf(clEsc);
-    if (vtPos < 0 || clPos <= vtPos) return para;
-    const before  = para.slice(0, vtPos + vtEsc.length);
-    const between = para.slice(vtPos + vtEsc.length, clPos);
-    const after   = para.slice(clPos);
-    return before + between.replace(/<w:tab\s*\/>/, '') + after;
-  });
-  zip.file('word/document.xml', xml);
-  return zip.generate({ type: 'nodebuffer', compression: 'DEFLATE' });
+// ── Placeholder detection ─────────────────────────────────────────────────────
+function detectPlaceholders(templatePath) {
+  try {
+    const zip = new PizZip(fs.readFileSync(templatePath,'binary'));
+    const tags = new Set();
+    zip.file(/^word\/(document|header|footer).*\.xml$/).forEach(f => {
+      try {
+        const xml = f.asText();
+        const texts = []; xml.replace(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g,(_,t)=>texts.push(t));
+        const joined = texts.join('');
+        for (const m of joined.matchAll(/\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g)) tags.add(m[1]);
+        for (const m of joined.matchAll(/\{%([A-Za-z_][A-Za-z0-9_]*)\}/g))    tags.add(m[1]);
+      } catch {}
+    });
+    return tags;
+  } catch { return new Set(); }
+}
+
+// ── QR codes ──────────────────────────────────────────────────────────────────
+const EMPTY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64'
+);
+async function makeQR(url) {
+  if (!url) return EMPTY_PNG;
+  return QRCode.toBuffer(url,{type:'png',width:400,margin:1});
 }
 
 // ── Fill .docx ────────────────────────────────────────────────────────────────
-function fillDocx(templatePath, data, filename) {
-  const zip = new PizZip(fs.readFileSync(templatePath, 'binary'));
-  const doc = new Docxtemplater(zip, {
-    paragraphLoop: true, linebreaks: true,
-    delimiters: { start: '{{', end: '}}' },
-    nullGetter: () => '',
+// Image placeholders in Word: {%QR_CODE_1}  {%QR_CODE_2}  (single brace + %)
+async function fillDocx(templatePath, data) {
+  const zip = new PizZip(fs.readFileSync(templatePath,'binary'));
+  const imgMod = new ImageModule({
+    centered: false,
+    getImage: v => (typeof v === 'string' && v.length > 0 ? Buffer.from(v, 'base64') : EMPTY_PNG),
+    getSize:  ()=> [79,79],   // 2.1cm × 2.1cm at 96 dpi
+  });
+  const doc = new Docxtemplater(zip,{
+    modules:[imgMod], paragraphLoop:true, linebreaks:true,
+    delimiters:{start:'{{',end:'}}'},
+    nullGetter:()=>'',
   });
   doc.render(data);
-  let buf = doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
-  if (isNewProofF(filename)) buf = applyNewProofFix(buf, data.VEHICLE_TYPE, data.COLOUR);
-  return buf;
+  return doc.getZip().generate({type:'nodebuffer',compression:'DEFLATE'});
 }
 
 // ── Convert .docx → PDF ───────────────────────────────────────────────────────
-function toPDF(soffice, docxPath, outDir) {
-  execSync(`"${soffice}" --headless --convert-to pdf --outdir "${outDir}" "${docxPath}"`,
-    { timeout: 60000, stdio: 'pipe' });
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function toPDF(soffice, docxPath, outDir) {
+  const cmd = `"${soffice}" --headless --norestore --convert-to pdf --outdir "${outDir}" "${docxPath}"`;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      execSync(cmd, {timeout:60000, stdio:'pipe'});
+    } catch(e) {
+      const detail = (e.stderr && e.stderr.toString().trim()) || (e.stdout && e.stdout.toString().trim()) || e.message;
+      if (attempt === 1) { await sleep(2000); continue; }
+      throw new Error(detail || 'LibreOffice conversion failed');
+    }
+    // Verify the PDF was actually produced (LibreOffice can exit 0 with no output)
+    const expectedPDF = path.join(outDir, path.basename(docxPath, '.docx') + '.pdf');
+    if (fs.existsSync(expectedPDF)) return; // success
+    if (attempt === 1) { await sleep(2000); continue; }
+    throw new Error(
+      'LibreOffice opened the file but produced no PDF.\n' +
+      '  FIX: Open this template in Microsoft Word → File → Save As → Word Document (.docx)\n' +
+      '  This re-saves it cleanly so LibreOffice can process it.'
+    );
+  }
+}
+
+// ── err helper ────────────────────────────────────────────────────────────────
+function logErr(doc, step, err) {
+  console.log(`\n  [ERROR] Document: ${doc} | Step: ${step} | Reason: ${err.message.split('\n')[0]}`);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   console.clear();
   console.log('╔═══════════════════════════════════════════════════════╗');
-  console.log('║    RIVERS STATE VEHICLE DOCUMENT GENERATOR  v4       ║');
+  console.log('║    RIVERS STATE VEHICLE DOCUMENT GENERATOR  v5       ║');
   console.log('╚═══════════════════════════════════════════════════════╝\n');
 
-  // 1. LibreOffice check
+  // 1. LibreOffice
   const soffice = findLibreOffice();
-  if (!soffice) {
-    console.error('  ✖  LibreOffice not found. Download (free):\n');
-    console.error('     https://www.libreoffice.org/download/\n');
-    process.exit(1);
-  }
+  if (!soffice) { console.error('  ✖  LibreOffice not found.\n  ▶  https://www.libreoffice.org/download/\n'); process.exit(1); }
   console.log(`  ✔  LibreOffice: ${soffice}\n`);
 
-  // 2. Scan DOC's folder
+  // 2. Scan templates
   if (!fs.existsSync(DOCS_DIR)) { console.error(`  ✖  Folder missing: ${DOCS_DIR}`); process.exit(1); }
-  const allTemplates = fs.readdirSync(DOCS_DIR).filter(f => /\.docx$/i.test(f)).sort();
-  if (!allTemplates.length) { console.error('  ✖  No .docx files found in DOC\'s folder.'); process.exit(1); }
+  let allTemplates;
+  try { allTemplates = fs.readdirSync(DOCS_DIR).filter(f=>/\.docx$/i.test(f)).sort(); }
+  catch(e) { console.error('[ERROR] Step: scan templates | Reason: '+e.message); process.exit(1); }
+  if (!allTemplates.length) { console.error("  ✖  No .docx files in DOC's folder."); process.exit(1); }
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline.createInterface({input:process.stdin,output:process.stdout});
 
   // 3. Document selection
   console.log('  Available templates:');
-  allTemplates.forEach((f, i) =>
-    console.log(`    ${String(i+1).padStart(2)}.  ${f}${isNewProofF(f) ? '  *' : ''}`)
-  );
-  console.log('      (* = layout-fix applied automatically)\n');
+  allTemplates.forEach((f,i)=>console.log(`    ${String(i+1).padStart(2)}.  ${f}`));
 
-  const selRaw = await ask(rl, '  Select documents (e.g. 1,3 or Enter for all): ');
+  const selRaw = await ask(rl,'  \nSelect documents (e.g. 1,3 or Enter for all): ');
   let selected;
   if (!selRaw.trim()) {
-    selected = allTemplates;
-    console.log(`  → All ${allTemplates.length} templates selected.\n`);
+    selected=allTemplates; console.log(`  → All ${allTemplates.length} selected.\n`);
   } else {
-    const nums = [...new Set(selRaw.split(',').map(n => parseInt(n.trim())).filter(n => n>=1 && n<=allTemplates.length))].sort((a,b)=>a-b);
+    const nums=[...new Set(selRaw.split(',').map(n=>parseInt(n.trim())).filter(n=>n>=1&&n<=allTemplates.length))].sort((a,b)=>a-b);
     if (!nums.length) { console.error('  ✖  Invalid selection.'); rl.close(); process.exit(1); }
-    selected = nums.map(n => allTemplates[n-1]);
+    selected=nums.map(n=>allTemplates[n-1]);
     console.log(`  → ${selected.length} template(s) selected.\n`);
   }
 
-  // 4. Input fields
-  console.log('  ─────────────────────────────────────────────────────\n');
-  const OWNER_NAME      = await ask(rl, "  Owner's Name                              : ");
-  const PHONE_NUMBER    = await ask(rl, "  Phone Number                              : ");
-  const PLATE_NUMBER    = (await ask(rl, "  Number Plate                              : ")).toUpperCase();
-  const PREVIOUS_NUMBER = await ask(rl, "  Passengers Number  [Enter to skip]        : ");
-  const VEHICLE_MAKE    = await ask(rl, "  Vehicle Make  (e.g. Toyota)               : ");
-  const MODEL           = await ask(rl, "  Model  (e.g. Camry)                       : ");
-  const VEHICLE_TYPE    = await ask(rl, "  Vehicle Type / Body Type  (e.g. Saloon)   : ");
-  const COLOUR          = await ask(rl, "  Colour                                    : ");
-  const CHASSIS_NUMBER  = await ask(rl, "  Chassis Number                            : ");
-  const ENGINE_NUMBER   = await ask(rl, "  Engine Number                             : ");
-  const STATE           = await ask(rl, "  State                                     : ");
-  const ADDRESS         = await ask(rl, "  Address                                   : ");
-  const REG_DATE        = await ask(rl, "  Registration Date  (DD/MM/YYYY)            : ");
-  const isprice         = await ask(rl, "  Insurance Price                           : ");
-  const isData          = await ask(rl, "  Insurance Top Data                        : ");
-  const pfRegData       = await ask(rl, "  Proof Reg Date  (DD/MM/YYYY)              : ");
-  const pfEXData        = await ask(rl, "  Proof Expiry Date (DD/MM/YYYY)             : ");
-
-  let CATEGORY = '';
-  while (!['private','commercial'].includes(CATEGORY.toLowerCase())) {
-    CATEGORY = await ask(rl, "  Category (Private / Commercial)           : ");
-    if (!['private','commercial'].includes(CATEGORY.toLowerCase()))
-      console.log('  ⚠  Please type  Private  or  Commercial.\n');
+  // 4. Detect required placeholders
+  console.log('  Scanning selected documents for required fields...');
+  const required = new Set(['PLATE_NUMBER']); // always need plate for file naming
+  for (const f of selected) {
+    try {
+      const tags = detectPlaceholders(path.join(DOCS_DIR,f));
+      for (const t of tags) required.add(t);
+    } catch(e) { logErr(f,'scan placeholders',e); }
   }
+  const needsRegDate  = required.has('REG_DATE');
+  const needsExpiry   = required.has('EXPIRY_DATE');
+  const needsCategory = needsRegDate || needsExpiry;
+  required.delete('EXPIRY_DATE'); // auto-calculated
+  console.log(`  Found ${required.size} field(s) to collect.\n`);
+  console.log('  ─────────────────────────────────────────────────────\n');
+
+  // 5. Collect inputs (canonical order, only detected fields)
+  const inp = {};
+  for (const field of PROMPT_ORDER) {
+    if (!required.has(field)) continue;
+    let val = await ask(rl, FIELD_PROMPTS[field] || `  ${field}: `);
+    if (field==='PLATE_NUMBER') val=val.toUpperCase();
+    inp[field]=val;
+  }
+
+  // Category (if needed for expiry)
+  if (needsCategory) {
+    let cat='';
+    while (!['private','commercial'].includes(cat.toLowerCase())) {
+      cat=await ask(rl,"  Category (Private / Commercial)              : ");
+      if (!['private','commercial'].includes(cat.toLowerCase())) console.log('  ⚠  Type Private or Commercial.\n');
+    }
+    inp.CATEGORY=cat;
+  }
+
+  // QR URLs
+  const wantsQR1=required.has('QR_CODE_1'), wantsQR2=required.has('QR_CODE_2');
+  if (wantsQR1) inp.QR_CODE_1_URL=await ask(rl,FIELD_PROMPTS.QR_CODE_1);
+  if (wantsQR2) inp.QR_CODE_2_URL=await ask(rl,FIELD_PROMPTS.QR_CODE_2);
   rl.close();
 
-  // 5. Auto-calculate expiry
-  let EXPIRY_DATE;
-  try { EXPIRY_DATE = calcExpiry(REG_DATE, CATEGORY); }
-  catch(e) { console.error('\n  ✖ ', e.message); process.exit(1); }
-
-  const catLabel = CATEGORY.charAt(0).toUpperCase() + CATEGORY.slice(1).toLowerCase();
-  const DATA = {
-    OWNER_NAME, PHONE_NUMBER, PLATE_NUMBER,
-    PREVIOUS_NUMBER: PREVIOUS_NUMBER || '',
-    VEHICLE_MAKE, MODEL, VEHICLE_TYPE, COLOUR,
-    CHASSIS_NUMBER, ENGINE_NUMBER, STATE, ADDRESS,
-    REG_DATE, EXPIRY_DATE, CATEGORY: catLabel,
-    isprice, isData, pfRegData, pfEXData,
-  };
-
-  console.log(`\n  ✔  Expiry auto-set: ${EXPIRY_DATE}  (${catLabel})\n`);
-  console.log(`  Generating ${selected.length} document(s)...\n`);
-
-  // 6. Output path setup
-  let cfg = loadConfig();
-  if (!cfg) {
-    // First run — ask where to save PDFs
-    console.log('  ┌────────────────────────────────────────────────────────┐');
-    console.log('  │  Welcome! This is your first time running this tool.   │');
-    console.log('  │  Where would you like to save your generated PDFs?     │');
-    console.log('  └────────────────────────────────────────────────────────┘');
-    console.log(`  Press Enter to save to your Desktop (${defaultOutputBase()}):\n`);
-    const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const input = await new Promise(r => rl2.question('  Output folder path: ', a => r(a.trim())));
-    rl2.close();
-    const chosen = input || defaultOutputBase();
-    cfg = { outputBase: chosen };
-    saveConfig(cfg);
-    console.log(`\n  ✔  Saved! Future PDFs will go to: ${chosen}\n`);
+  // 6. Calculate expiry
+  let EXPIRY_DATE='';
+  if (needsCategory && inp.REG_DATE) {
+    try { EXPIRY_DATE=calcExpiry(inp.REG_DATE,inp.CATEGORY); console.log(`\n  ✔  Expiry: ${EXPIRY_DATE}  (${inp.CATEGORY})`); }
+    catch(e) { console.error('  ✖ ',e.message); process.exit(1); }
   }
 
-  const safePlate = PLATE_NUMBER.replace(/[^A-Z0-9]/gi,'');
-  const jobFolder = getJobFolder(cfg.outputBase, safePlate);
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
-  let ok = 0, fail = 0;
+  // 7. Build DATA
+  const catLabel=inp.CATEGORY ? inp.CATEGORY.charAt(0).toUpperCase()+inp.CATEGORY.slice(1).toLowerCase() : '';
+  const DATA={};
+  for (const [k,v] of Object.entries(inp)) {
+    if (['CATEGORY','QR_CODE_1_URL','QR_CODE_2_URL'].includes(k)) continue;
+    DATA[k]=v;
+  }
+  if (needsCategory)    DATA.CATEGORY=catLabel;
+  if (needsExpiry||needsRegDate) DATA.EXPIRY_DATE=EXPIRY_DATE;
+  // Format dates
+  if (DATA.REG_DATE)   { try { DATA.REG_DATE   = fmtDD(parseMonYear(DATA.REG_DATE));  } catch {} }
+  if (DATA.pfRegData)  { try { DATA.pfRegData  = fmtMY(parseMonYear(DATA.pfRegData)); } catch {} }
+  if (DATA.pfEXData)   { try { DATA.pfEXData   = fmtMY(parseMonYear(DATA.pfEXData));  } catch {} }
+  if (!DATA.PREVIOUS_NUMBER) DATA.PREVIOUS_NUMBER='';
 
+  // QR buffers
+  if (wantsQR1||wantsQR2) {
+    process.stdout.write('\n  Generating QR codes...');
+    if (wantsQR1) { try { DATA.QR_CODE_1=(await makeQR(inp.QR_CODE_1_URL)).toString('base64'); } catch(e) { DATA.QR_CODE_1=EMPTY_PNG.toString('base64'); logErr('QR_CODE_1','generate QR',e); } }
+    if (wantsQR2) { try { DATA.QR_CODE_2=(await makeQR(inp.QR_CODE_2_URL)).toString('base64'); } catch(e) { DATA.QR_CODE_2=EMPTY_PNG.toString('base64'); logErr('QR_CODE_2','generate QR',e); } }
+    console.log(' ✔');
+  }
+
+  console.log(`\n  Generating ${selected.length} document(s)...\n`);
+
+  // 8. Output path
+  let cfg=loadConfig();
+  if (!cfg) {
+    console.log('  ┌──────────────────────────────────────────────────────┐');
+    console.log('  │  First run — where should PDFs be saved?             │');
+    console.log('  └──────────────────────────────────────────────────────┘');
+    console.log(`  Press Enter for Desktop (${defaultBase()}):\n`);
+    const rl2=readline.createInterface({input:process.stdin,output:process.stdout});
+    const v=await new Promise(r=>rl2.question('  Output folder: ',a=>r(a.trim()))); rl2.close();
+    const chosen=v||defaultBase(); cfg={outputBase:chosen}; saveConfig(cfg);
+    console.log(`  ✔  Saved: ${chosen}\n`);
+  }
+
+  const safePlate=(inp.PLATE_NUMBER||'UNKNOWN').replace(/[^A-Z0-9]/gi,'');
+  let jobFolder;
+  try { jobFolder=getJobFolder(cfg.outputBase,safePlate); }
+  catch(e) { console.error('[ERROR] Step: create output folder | Reason: '+e.message); process.exit(1); }
+  try { fs.mkdirSync(TEMP_DIR,{recursive:true}); }
+  catch(e) { console.error('[ERROR] Step: create temp folder | Reason: '+e.message); process.exit(1); }
+
+  // 9. Process
+  // Kill any lingering LibreOffice instances before batch starts
+  try { execSync('taskkill /f /im soffice.exe', {stdio:'pipe'}); await sleep(1000); } catch {}
+
+  let ok=0, fail=0;
   for (const tmplFile of selected) {
-    const origIdx = allTemplates.indexOf(tmplFile) + 1;
-    const outBase = `${safePlate}_doc${String(origIdx).padStart(2,'0')}`;
-    const tmpDocx = path.join(TEMP_DIR, `${outBase}.docx`);
-    process.stdout.write(`  ${tmplFile.padEnd(42)}`);
+    const origIdx=allTemplates.indexOf(tmplFile)+1;
+    // Sanitize temp name — strip parenthetical words e.g. (AutoRecovered), (1)
+    const cleanName=tmplFile.replace(/\s*\([^)]*\)/g,'').replace(/\s+/g,'_').replace(/\.docx$/i,'');
+    const outBase=`${safePlate}_doc${String(origIdx).padStart(2,'0')}_${cleanName}`;
+    const tmpDocx=path.join(TEMP_DIR,`${safePlate}_doc${String(origIdx).padStart(2,'0')}.docx`);
+    process.stdout.write(`  ${tmplFile.padEnd(44)}`);
+    let step='fill template';
     try {
-      fs.writeFileSync(tmpDocx, fillDocx(path.join(DOCS_DIR, tmplFile), DATA, tmplFile));
-      toPDF(soffice, tmpDocx, jobFolder);
+      const buf=await fillDocx(path.join(DOCS_DIR,tmplFile),DATA);
+      step='write temp file';
+      fs.writeFileSync(tmpDocx,buf);
+      step='convert to PDF';
+      await toPDF(soffice,tmpDocx,jobFolder);
       console.log(`✔  ${outBase}.pdf`);
       ok++;
     } catch(err) {
-      console.log(`✖  ${err.message.split('\n')[0].slice(0,55)}`);
+      console.log('✖');
+      logErr(tmplFile,step,err);
+      // Keep the failed .docx for inspection
+      try { fs.copyFileSync(tmpDocx, path.join(jobFolder, `FAILED_${outBase}.docx`)); } catch {}
       fail++;
     }
   }
 
-  // 7. Cleanup
-  try { fs.rmSync(TEMP_DIR, { recursive: true, force: true }); } catch {}
+  // 10. Cleanup
+  try { fs.rmSync(TEMP_DIR,{recursive:true,force:true}); } catch {}
 
+  // 11. Summary
   console.log('\n═══════════════════════════════════════════════════════');
-  console.log(`  ✔  ${ok} generated    ✖  ${fail} failed`);
+  console.log(`  ✔  Successfully generated: ${ok} document(s)`);
+  if (fail) console.log(`  ✘  Failed: ${fail} document(s)  (see errors above)`);
   console.log(`  📁  ${jobFolder}`);
   console.log('═══════════════════════════════════════════════════════\n');
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 if (process.argv.includes('--setpath')) {
-  handleSetPath().catch(e => { console.error('Error:', e.message); process.exit(1); });
+  handleSetPath().catch(e=>{console.error('Error:',e.message);process.exit(1);});
 } else {
-  main().catch(e => { console.error('\n  ✖ Fatal:', e.message); process.exit(1); });
+  main().catch(e=>{console.error('\n  ✖ Fatal:',e.message);process.exit(1);});
 }

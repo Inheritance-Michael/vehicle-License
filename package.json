@@ -12,7 +12,9 @@
   "license": "ISC",
   "dependencies": {
     "docxtemplater": "^3.68.7",
+    "docxtemplater-image-module-free": "^1.1.1",
     "pdfkit": "^0.18.0",
-    "pizzip": "^3.2.0"
+    "pizzip": "^3.2.0",
+    "qrcode": "^1.5.4"
   }
 }
