@@ -60,6 +60,19 @@ function calcExpiry(reg,cat) {
   return fmtDD(d);
 }
 
+// ── Variants ──────────────────────────────────────────────────────────────────
+const VARIANT_SUFFIXES = ['_UPPER', '_LOWER', '_TITLE', '_DASHED', '_SLASH', '_SHORT', '_LONG'];
+function getBaseField(tag) {
+  for (const suf of VARIANT_SUFFIXES) {
+    if (tag.endsWith(suf)) return tag.slice(0, -suf.length);
+  }
+  return tag;
+}
+function toTitleCase(str) {
+  if (!str) return '';
+  return str.toLowerCase().replace(/\w\S*/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+}
+
 // ── Prompt helpers ────────────────────────────────────────────────────────────
 const ask = (rl,q) => new Promise(r=>rl.question(q,a=>r(a.trim())));
 
@@ -205,7 +218,7 @@ async function main() {
   for (const f of selected) {
     try {
       const tags = detectPlaceholders(path.join(DOCS_DIR,f));
-      for (const t of tags) required.add(t);
+      for (const t of tags) required.add(getBaseField(t));
     } catch(e) { logErr(f,'scan placeholders',e); }
   }
   const needsRegDate  = required.has('REG_DATE');
@@ -256,11 +269,43 @@ async function main() {
   }
   if (needsCategory)    DATA.CATEGORY=catLabel;
   if (needsExpiry||needsRegDate) DATA.EXPIRY_DATE=EXPIRY_DATE;
-  // Format dates
-  if (DATA.REG_DATE)   { try { DATA.REG_DATE   = fmtDD(parseMonYear(DATA.REG_DATE));  } catch {} }
-  if (DATA.pfRegData)  { try { DATA.pfRegData  = fmtMY(parseMonYear(DATA.pfRegData)); } catch {} }
-  if (DATA.pfEXData)   { try { DATA.pfEXData   = fmtMY(parseMonYear(DATA.pfEXData));  } catch {} }
+  
+  // Parse and format base dates
+  const dateObjs = {};
+  if (DATA.REG_DATE)    { try { dateObjs.REG_DATE    = parseMonYear(DATA.REG_DATE);    DATA.REG_DATE    = fmtDD(dateObjs.REG_DATE);    } catch {} }
+  if (DATA.EXPIRY_DATE) { try { dateObjs.EXPIRY_DATE = parseMonYear(DATA.EXPIRY_DATE); DATA.EXPIRY_DATE = fmtDD(dateObjs.EXPIRY_DATE); } catch {} }
+  if (DATA.pfRegData)   { try { dateObjs.pfRegData   = parseMonYear(DATA.pfRegData);   DATA.pfRegData   = fmtMY(dateObjs.pfRegData);   } catch {} }
+  if (DATA.pfEXData)    { try { dateObjs.pfEXData    = parseMonYear(DATA.pfEXData);    DATA.pfEXData    = fmtMY(dateObjs.pfEXData);    } catch {} }
   if (!DATA.PREVIOUS_NUMBER) DATA.PREVIOUS_NUMBER='';
+
+  // Generate Variants
+  const TEXT_FIELDS = ['CATEGORY','OWNER_NAME','VEHICLE_TYPE','VEHICLE_MAKE','MODEL','COLOUR','STATE','ADDRESS'];
+  for (const f of TEXT_FIELDS) {
+    if (DATA[f] !== undefined) {
+      const val = String(DATA[f] || '');
+      DATA[`${f}_UPPER`] = val.toUpperCase();
+      DATA[`${f}_LOWER`] = val.toLowerCase();
+      DATA[`${f}_TITLE`] = toTitleCase(val);
+    }
+  }
+
+  const DATE_FIELDS = ['REG_DATE','EXPIRY_DATE','pfRegData','pfEXData'];
+  const MON_FULL = ['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY','AUGUST','SEPTEMBER','OCTOBER','NOVEMBER','DECEMBER'];
+  for (const f of DATE_FIELDS) {
+    const dObj = dateObjs[f];
+    if (dObj) {
+      const p=n=>String(n).padStart(2,'0');
+      DATA[`${f}_DASHED`] = `${p(dObj.getDate())}-${p(dObj.getMonth()+1)}-${dObj.getFullYear()}`;
+      DATA[`${f}_SLASH`]  = `${p(dObj.getDate())}/${p(dObj.getMonth()+1)}/${dObj.getFullYear()}`;
+      DATA[`${f}_SHORT`]  = `${MON_NAME[dObj.getMonth()]} ${dObj.getFullYear()}`;
+      DATA[`${f}_LONG`]   = `${MON_FULL[dObj.getMonth()]} ${dObj.getFullYear()}`;
+    } else if (DATA[f] !== undefined) {
+      DATA[`${f}_DASHED`] = DATA[f];
+      DATA[`${f}_SLASH`]  = DATA[f];
+      DATA[`${f}_SHORT`]  = DATA[f];
+      DATA[`${f}_LONG`]   = DATA[f];
+    }
+  }
 
   // QR buffers
   if (wantsQR1||wantsQR2) {
